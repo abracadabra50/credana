@@ -1,0 +1,9 @@
+{
+  "migrations-dir": "migrations",
+  "migrations-table": "pgmigrations",
+  "driver": "pg",
+  "schema": "public",
+  "create-schema": true,
+  "check-order": true,
+  "timestamp": true
+} 
