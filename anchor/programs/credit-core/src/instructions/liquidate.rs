@@ -155,7 +155,7 @@ pub fn handler(ctx: Context<Liquidate>, repay_amount: u64) -> Result<()> {
     token::transfer(cpi_ctx, actual_repay_amount)?;
     
     // Transfer collateral from vault to liquidator
-    let vault_authority_bump = *ctx.bumps.get("vault_authority").unwrap();
+    let vault_authority_bump = ctx.bumps.vault_authority;
     let vault_authority_seeds = &[VAULT_AUTHORITY_SEED, &[vault_authority_bump]];
     let signer_seeds = &[&vault_authority_seeds[..]];
     

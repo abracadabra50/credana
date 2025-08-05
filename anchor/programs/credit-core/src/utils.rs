@@ -26,16 +26,17 @@ pub fn get_pyth_price(
     clock: &Clock,
     max_staleness_slots: u64,
 ) -> Result<u64> {
-    let price_feed = pyth_sdk_solana::load_price_feed_from_account_info(price_account)
+    let price_feed = pyth_sdk_solana::state::SolanaPriceAccount::account_info_to_feed(price_account)
         .map_err(|_| CreditError::InvalidOracle)?;
         
     let current_price = price_feed
         .get_price_no_older_than(clock.unix_timestamp, 60)
         .ok_or(CreditError::StaleOracle)?;
         
-    // Validate price freshness
+    // Validate price freshness by checking publish time
+    let price_unchecked = price_feed.get_price_unchecked();
     require!(
-        clock.slot.saturating_sub(price_feed.get_price_unchecked().publish_time as u64) <= max_staleness_slots,
+        clock.slot.saturating_sub(price_unchecked.publish_time as u64) <= max_staleness_slots,
         CreditError::StaleOracle
     );
     

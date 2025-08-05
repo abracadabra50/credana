@@ -1,5 +1,3 @@
-use anchor_lang::prelude::*;
-
 // PDA Seeds
 pub const CONFIG_SEED: &[u8] = b"config";
 pub const USER_POSITION_SEED: &[u8] = b"user_position";

@@ -9,7 +9,7 @@ import { queueRecordDebt } from '../blockchain/transaction-queue';
 import { recordMetrics } from '../../utils/metrics';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2023-10-16',
+  apiVersion: '2023-08-16',
 });
 
 // Validation schemas
@@ -214,7 +214,7 @@ export class StripeWebhookHandler {
             userId: cardResult.rows[0].user_id,
             amount: authorization.amount / 100, // Convert to dollars
             authorizationId: authorization.id,
-            merchantName: authorization.merchant_data.name,
+            merchantName: authorization.merchant_data.name || undefined,
           });
         }
       }

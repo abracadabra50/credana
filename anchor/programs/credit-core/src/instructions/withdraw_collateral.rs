@@ -125,7 +125,7 @@ pub fn handler(ctx: Context<WithdrawCollateral>, amount: u64) -> Result<()> {
     }
     
     // Transfer jitoSOL from vault to user
-    let vault_authority_bump = *ctx.bumps.get("vault_authority").unwrap();
+    let vault_authority_bump = ctx.bumps.vault_authority;
     let vault_authority_seeds = &[VAULT_AUTHORITY_SEED, &[vault_authority_bump]];
     let signer_seeds = &[&vault_authority_seeds[..]];
     
