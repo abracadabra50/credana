@@ -119,3 +119,7 @@ Desktop.ini
 
 
 
+
+# Node modules - install locally
+node_modules/
+*/node_modules/
