@@ -1,4 +1,6 @@
 import { logger } from '../../utils/logger';
+import { positionCache, CachedPosition } from '../cache/position-cache';
+import { recordMetrics } from '../../utils/metrics';
 
 const BPS_PRECISION = 10_000;
 const HEALTH_FACTOR_BUFFER_BPS = 1100; // 1.10 minimum HF for new debt
@@ -74,7 +76,7 @@ export async function checkHealthFactor(
         approved: false,
         healthFactor,
         reason: 'Insufficient collateral',
-        availableCredit: calculateAvailableCredit(
+        availableCredit: calculateAvailableCreditInternal(
           collateralValueUSD,
           currentDebt,
           liquidationThreshold
@@ -115,9 +117,9 @@ export async function checkHealthFactor(
 }
 
 /**
- * Calculate available credit based on current position
+ * Calculate available credit based on current position (internal helper)
  */
-function calculateAvailableCredit(
+function calculateAvailableCreditInternal(
   collateralValueUSD: number,
   currentDebt: number,
   liquidationThreshold: number
@@ -270,4 +272,176 @@ export function checkCircuitBreakers(params: {
   }
 
   return { proceed: true };
+}
+
+/**
+ * HIGH-PERFORMANCE cache-based authorization check for Stripe webhooks
+ * CRITICAL: Must complete in <100ms for 500ms total webhook response
+ * Uses Redis cache for fastest possible position lookups
+ */
+export async function checkAuthorizationCached(
+  userId: string,
+  authorizationAmount: number, // in cents
+  walletAddress?: string
+): Promise<{
+  approved: boolean;
+  healthFactor: number;
+  availableCredit: number;
+  reason?: string;
+  responseTimeMs: number;
+  cacheHit: boolean;
+}> {
+  const startTime = Date.now();
+  
+  try {
+    // Get position from cache (target <10ms)
+    let position: CachedPosition | null = null;
+    let cacheHit = false;
+    
+    if (userId) {
+      position = await positionCache.getPosition(userId);
+      cacheHit = position !== null;
+    } else if (walletAddress) {
+      position = await positionCache.getPositionByWallet(walletAddress);
+      cacheHit = position !== null;
+    }
+    
+    const lookupTime = Date.now() - startTime;
+    recordMetrics('auth.cache_lookup.response_time', lookupTime);
+    
+    if (!position) {
+      logger.warn('Position not found in cache', { userId, walletAddress, lookupTime });
+      return {
+        approved: false,
+        healthFactor: 0,
+        availableCredit: 0,
+        reason: 'Position not found',
+        responseTimeMs: Date.now() - startTime,
+        cacheHit: false
+      };
+    }
+    
+    // Quick validation checks
+    if (authorizationAmount <= 0) {
+      return {
+        approved: false,
+        healthFactor: position.healthFactor,
+        availableCredit: position.availableCredit,
+        reason: 'Invalid amount',
+        responseTimeMs: Date.now() - startTime,
+        cacheHit
+      };
+    }
+    
+    // Convert authorization amount from cents to USDC (6 decimals)
+    const debtIncreaseUsdc = authorizationAmount * 10000; // cents to 6-decimal USDC
+    
+    // Check if amount exceeds available credit
+    if (debtIncreaseUsdc > position.availableCredit) {
+      recordMetrics('auth.decline.insufficient_credit', 1, { userId: position.userId });
+      
+      return {
+        approved: false,
+        healthFactor: position.healthFactor,
+        availableCredit: position.availableCredit,
+        reason: 'Insufficient available credit',
+        responseTimeMs: Date.now() - startTime,
+        cacheHit
+      };
+    }
+    
+    // Calculate new health factor after potential debt increase
+    const newTotalDebt = position.debtUsdc + debtIncreaseUsdc;
+    
+    // Use cached collateral value (position should include current price calculation)
+    // For now, approximate with stored collateral - in production, this would use current price
+    const estimatedCollateralValue = position.collateralAmount * 200; // Approximate $200 jitoSOL
+    const liquidationValue = (estimatedCollateralValue * 6000) / BPS_PRECISION; // 60% liquidation threshold
+    
+    const newHealthFactor = newTotalDebt > 0 
+      ? (liquidationValue / newTotalDebt) * BPS_PRECISION 
+      : BPS_PRECISION * 10;
+    
+    // Check minimum health factor buffer (110%)
+    const isHealthy = newHealthFactor >= HEALTH_FACTOR_BUFFER_BPS;
+    
+    const responseTime = Date.now() - startTime;
+    
+    // Performance monitoring
+    if (responseTime > 100) {
+      logger.warn('Slow authorization check', { 
+        userId: position.userId, 
+        responseTime,
+        authAmount: authorizationAmount 
+      });
+    }
+    
+    recordMetrics('auth.authorization.response_time', responseTime);
+    recordMetrics('auth.authorization.decision', 1, { 
+      approved: isHealthy ? 'true' : 'false',
+      cache_hit: cacheHit ? 'true' : 'false'
+    });
+    
+    const result = {
+      approved: isHealthy,
+      healthFactor: newHealthFactor,
+      availableCredit: Math.max(0, position.availableCredit - debtIncreaseUsdc),
+      reason: isHealthy ? undefined : 'Would exceed health factor threshold',
+      responseTimeMs: responseTime,
+      cacheHit
+    };
+    
+    logger.info('Authorization check completed', {
+      userId: position.userId,
+      approved: result.approved,
+      authAmount: authorizationAmount / 100, // Convert to dollars for logging
+      healthFactor: newHealthFactor / 100, // Convert to percentage
+      responseTime,
+      cacheHit
+    });
+    
+    return result;
+    
+  } catch (error) {
+    const responseTime = Date.now() - startTime;
+    logger.error('Authorization check failed', { 
+      userId, 
+      walletAddress, 
+      authorizationAmount,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      responseTime 
+    });
+    
+    recordMetrics('auth.authorization.error', 1, { userId: userId || 'unknown' });
+    
+    // Fail safe: decline on error
+    return {
+      approved: false,
+      healthFactor: 0,
+      availableCredit: 0,
+      reason: 'System error',
+      responseTimeMs: responseTime,
+      cacheHit: false
+    };
+  }
+}
+
+/**
+ * Calculate available credit for user (cache-optimized)
+ */
+export async function calculateAvailableCredit(userId: string): Promise<number> {
+  const startTime = Date.now();
+  
+  try {
+    const availableCredit = await positionCache.getAvailableCredit(userId);
+    
+    const responseTime = Date.now() - startTime;
+    recordMetrics('auth.available_credit.response_time', responseTime);
+    
+    return availableCredit || 0;
+    
+  } catch (error) {
+    logger.error('Calculate available credit failed', { userId, error });
+    return 0;
+  }
 } 

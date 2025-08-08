@@ -33,6 +33,8 @@ pub struct Config {
     
     /// jitoSOL mint address
     pub jito_sol_mint: Pubkey,
+    /// WSOL mint address
+    pub wsol_mint: Pubkey,
     
     /// Global borrow index for interest accrual (Ray precision)
     pub global_borrow_index: u128,
@@ -62,7 +64,7 @@ impl Config {
         32 + // jito_sol_usd_oracle
         32 + // usdc_mint
         32 + // jito_sol_mint
-        16 + // global_borrow_index
+        32 + // wsol_mint        16 + // global_borrow_index
         8 + // last_update_timestamp
         8 + // total_debt_usdc
         8 + // total_collateral

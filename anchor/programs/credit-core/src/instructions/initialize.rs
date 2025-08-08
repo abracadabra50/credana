@@ -12,7 +12,7 @@ pub struct InitializeParams {
     pub jito_sol_usd_oracle: Pubkey,
     pub usdc_mint: Pubkey,
     pub jito_sol_mint: Pubkey,
-}
+    pub wsol_mint: Pubkey,}
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
@@ -52,7 +52,7 @@ pub fn handler(ctx: Context<Initialize>, params: InitializeParams) -> Result<()>
     config.jito_sol_usd_oracle = params.jito_sol_usd_oracle;
     config.usdc_mint = params.usdc_mint;
     config.jito_sol_mint = params.jito_sol_mint;
-    config.global_borrow_index = RAY_PRECISION;
+    config.wsol_mint = params.wsol_mint;    config.global_borrow_index = RAY_PRECISION;
     config.last_update_timestamp = Clock::get()?.unix_timestamp;
     config.total_debt_usdc = 0;
     config.total_collateral = 0;

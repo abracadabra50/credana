@@ -1,0 +1,148 @@
+/* Font imports - must be first */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-weight: 400;
+    letter-spacing: -0.02em;
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-semibold tracking-tight;
+  }
+}
+
+@layer components {
+  /* Glass effects with sharp edges */
+  .glass {
+    @apply backdrop-blur-2xl bg-white/[0.02] border border-white/[0.05];
+    box-shadow: 
+      inset 0 0 0 1px rgba(255, 255, 255, 0.02),
+      0 20px 40px -20px rgba(0, 0, 0, 0.8);
+  }
+  
+  .glass-subtle {
+    @apply backdrop-blur-md bg-white/[0.01] border border-white/[0.03];
+  }
+  
+  /* Gradient text with sharper feel */
+  .gradient-text {
+    @apply bg-gradient-to-r from-primary via-violet-400 to-accent bg-clip-text text-transparent font-bold;
+  }
+  
+  /* Card hover with no rounded corners */
+  .card-hover {
+    @apply transition-all duration-200 hover:translate-y-[-1px];
+    box-shadow: 0 10px 40px -10px rgba(139, 92, 246, 0.2);
+  }
+  
+  .card-hover:hover {
+    box-shadow: 0 20px 60px -15px rgba(139, 92, 246, 0.3);
+  }
+  
+  /* Sharp gradient backgrounds */
+  .card-gradient-purple {
+    background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+    box-shadow: 0 20px 40px -20px rgba(139, 92, 246, 0.5);
+  }
+  
+  .card-gradient-dark {
+    background: linear-gradient(135deg, #0a0a0a, #000000);
+    border: 1px solid rgba(139, 92, 246, 0.1);
+  }
+  
+  .card-gradient-cyan {
+    background: linear-gradient(135deg, #0ea5e9, #0284c7);
+    box-shadow: 0 20px 40px -20px rgba(14, 165, 233, 0.5);
+  }
+  
+  /* 3D transforms for credit card */
+  .perspective-1000 {
+    perspective: 1000px;
+  }
+  
+  .transform-style-preserve-3d {
+    transform-style: preserve-3d;
+  }
+  
+  .backface-hidden {
+    backface-visibility: hidden;
+  }
+  
+  .rotate-y-180 {
+    transform: rotateY(180deg);
+  }
+  
+  /* Number transitions */
+  .number-transition {
+    @apply transition-all duration-300 ease-out font-mono;
+  }
+  
+  /* Premium shadows */
+  .shadow-premium {
+    box-shadow: 
+      0 0 0 1px rgba(139, 92, 246, 0.1),
+      0 10px 40px -10px rgba(0, 0, 0, 0.8),
+      0 30px 90px -30px rgba(139, 92, 246, 0.2);
+  }
+  
+  /* Sharp borders */
+  .border-sharp {
+    border: 1px solid rgba(255, 255, 255, 0.05);
+  }
+  
+  /* Safe area padding for mobile */
+  .safe-top {
+    padding-top: env(safe-area-inset-top);
+  }
+  
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  
+  /* Button styles */
+  .btn-primary {
+    @apply bg-primary text-primary-foreground px-6 py-3 font-medium;
+    @apply hover:bg-violet-500 transition-all duration-200;
+    @apply border border-primary/20;
+    box-shadow: 
+      0 0 20px rgba(139, 92, 246, 0.3),
+      inset 0 0 20px rgba(139, 92, 246, 0.1);
+  }
+  
+  .btn-secondary {
+    @apply bg-transparent text-foreground px-6 py-3 font-medium;
+    @apply hover:bg-white/5 transition-all duration-200;
+    @apply border border-white/10;
+  }
+}
+
+/* Custom scrollbar - thinner and darker */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-black;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-primary/30;
+  border: 1px solid rgba(139, 92, 246, 0.2);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-primary/50;
+}
+
+/* Selection colors */
+::selection {
+  @apply bg-primary/30 text-white;
+}

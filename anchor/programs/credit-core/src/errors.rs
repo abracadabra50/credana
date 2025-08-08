@@ -55,4 +55,16 @@ pub enum CreditError {
     
     #[msg("Slippage tolerance exceeded")]
     SlippageExceeded,
-} 
+    
+    #[msg("Position not initialized")]
+    PositionNotInitialized,
+    
+    #[msg("Invalid mint")]
+    InvalidMint,
+    
+    #[msg("Exceeds credit limit")]
+    ExceedsCreditLimit,
+    
+    #[msg("Position unhealthy")]
+    UnhealthyPosition,
+}

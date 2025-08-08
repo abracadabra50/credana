@@ -1,0 +1,126 @@
+use anchor_lang::prelude::*;
+use anchor_spl::token::{self, Token, TokenAccount, Transfer};
+use crate::state::{Config, UserPosition};
+use crate::utils::calculate_borrow_index;
+use crate::constants::*;
+use crate::errors::CreditError;
+
+#[derive(Accounts)]
+pub struct RepayUsdcProper<'info> {
+    #[account(
+        mut,
+        seeds = [USER_POSITION_SEED, repayer.key().as_ref()],
+        bump,
+        constraint = user_position.owner == repayer.key() @ CreditError::Unauthorized
+    )]
+    pub user_position: Account<'info, UserPosition>,
+
+    #[account(
+        mut,
+        seeds = [CONFIG_SEED],
+        bump
+    )]
+    pub config: Account<'info, Config>,
+
+    /// User's USDC token account to pay from
+    #[account(
+        mut,
+        constraint = user_usdc_account.owner == repayer.key() @ CreditError::Unauthorized,
+        constraint = user_usdc_account.mint == config.usdc_mint @ CreditError::InvalidMint
+    )]
+    pub user_usdc_account: Account<'info, TokenAccount>,
+
+    /// Treasury USDC token account (PDA)
+    #[account(
+        mut,
+        seeds = [b"treasury_usdc"],
+        bump,
+        token::mint = config.usdc_mint
+    )]
+    pub treasury_usdc: Account<'info, TokenAccount>,
+
+    /// Insurance fund USDC token account (PDA) - receives interest portion
+    #[account(
+        mut,
+        seeds = [b"insurance_usdc"],
+        bump,
+        token::mint = config.usdc_mint
+    )]
+    pub insurance_usdc: Account<'info, TokenAccount>,
+
+    #[account(mut)]
+    pub repayer: Signer<'info>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+pub fn handler(ctx: Context<RepayUsdcProper>, amount_usdc: u64) -> Result<()> {
+    let config = &mut ctx.accounts.config;
+    let user_position = &mut ctx.accounts.user_position;
+    let clock = Clock::get()?;
+
+    // Update global interest index
+    config.global_borrow_index = calculate_borrow_index(
+        config.last_update_timestamp,
+        config.global_borrow_index,
+        config.interest_rate_bps,
+        clock.unix_timestamp
+    )?;
+    config.last_update_timestamp = clock.unix_timestamp;
+
+    // Calculate current debt with interest
+    let current_debt = user_position.calculate_debt_with_interest(config.global_borrow_index)?;
+    
+    // Calculate interest accrued
+    let interest_accrued = current_debt.saturating_sub(user_position.debt_usdc);
+    
+    // Ensure not overpaying
+    let repay_amount = amount_usdc.min(current_debt);
+    
+    // Calculate how much goes to principal vs interest
+    let interest_payment = interest_accrued.min(repay_amount);
+    let principal_payment = repay_amount.saturating_sub(interest_payment);
+
+    // Transfer principal to treasury
+    if principal_payment > 0 {
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.user_usdc_account.to_account_info(),
+            to: ctx.accounts.treasury_usdc.to_account_info(),
+            authority: ctx.accounts.repayer.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        token::transfer(cpi_ctx, principal_payment)?;
+    }
+
+    // Transfer interest to insurance fund
+    if interest_payment > 0 {
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.user_usdc_account.to_account_info(),
+            to: ctx.accounts.insurance_usdc.to_account_info(),
+            authority: ctx.accounts.repayer.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        token::transfer(cpi_ctx, interest_payment)?;
+    }
+
+    // Update user debt
+    user_position.debt_usdc = current_debt
+        .checked_sub(repay_amount)
+        .ok_or(CreditError::MathOverflow)?;
+    
+    // Update borrow index snapshot
+    user_position.borrow_index_snapshot = config.global_borrow_index;
+    user_position.last_update_timestamp = clock.unix_timestamp;
+
+    // Update global debt
+    config.total_debt_usdc = config.total_debt_usdc
+        .saturating_sub(principal_payment);
+
+    msg!("Repaid {} USDC for user: {}", repay_amount, ctx.accounts.repayer.key());
+    msg!("Principal: {}, Interest: {}", principal_payment, interest_payment);
+    msg!("Remaining debt: {} USDC", user_position.debt_usdc);
+
+    Ok(())
+}

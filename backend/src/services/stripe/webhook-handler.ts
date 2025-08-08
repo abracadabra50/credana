@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { logger } from '../../utils/logger';
 import { redis } from '../../config/redis';
 import { db } from '../../config/database';
-import { checkHealthFactor } from '../auth/authorization-service';
+import { checkAuthorizationCached } from '../auth/authorization-service';
 import { queueRecordDebt } from '../blockchain/transaction-queue';
 import { recordMetrics } from '../../utils/metrics';
 
@@ -92,7 +92,8 @@ export class StripeWebhookHandler {
 
   /**
    * Handle real-time authorization requests
-   * Must approve/decline within 500ms
+   * CRITICAL: Must approve/decline within 500ms
+   * TARGET: <100ms authorization decision for sub-500ms total response
    */
   private async handleAuthorizationRequest(
     event: Stripe.Event,
@@ -110,38 +111,24 @@ export class StripeWebhookHandler {
         card: authorization.card,
       });
 
-      // Get card and user info from cache (1-2ms)
+      // Get card and user info from cache (target <5ms)
       const cardKey = `card:${validatedData.card.id}`;
       const cachedCard = await redis.get(cardKey);
       
       if (!cachedCard) {
         logger.warn('Card not found in cache', { cardId: validatedData.card.id });
+        recordMetrics('stripe.auth.decline.card_not_found', 1);
         res.status(200).json({ approved: false });
         return;
       }
 
       const { userId, cardId } = JSON.parse(cachedCard);
 
-      // Get user position from cache (1-2ms)
-      const positionKey = `position:${userId}`;
-      const cachedPosition = await redis.get(positionKey);
-      
-      if (!cachedPosition) {
-        logger.warn('Position not found in cache', { userId });
-        res.status(200).json({ approved: false });
-        return;
-      }
-
-      const position = JSON.parse(cachedPosition);
-
-      // Check if authorization would be healthy
-      const authDecision = await checkHealthFactor({
-        currentDebt: position.debt_usdc,
-        collateralAmount: position.collateral_amount,
-        collateralPrice: position.collateral_price,
-        newDebtAmount: validatedData.amount / 100, // Convert cents to dollars
-        liquidationThreshold: position.liquidation_threshold_bps,
-      });
+      // USE OPTIMIZED CACHE-BASED AUTHORIZATION (target <100ms total)
+      const authDecision = await checkAuthorizationCached(
+        userId,
+        validatedData.amount // amount in cents
+      );
 
       // Log decision for audit
       await this.logAuthorizationDecision({
@@ -152,24 +139,51 @@ export class StripeWebhookHandler {
         approved: authDecision.approved,
         healthFactor: authDecision.healthFactor,
         reason: authDecision.reason,
-        merchantName: validatedData.merchant_data.name,
-        latency: Date.now() - startTime,
+        merchantName: validatedData.merchant_data.name || undefined,
+        latency: authDecision.responseTimeMs,
+        cacheHit: authDecision.cacheHit,
       });
 
       // Respond to Stripe
       res.status(200).json({ 
         approved: authDecision.approved,
         metadata: {
-          health_factor: authDecision.healthFactor.toString(),
+          health_factor: (authDecision.healthFactor / 100).toString(), // Convert BPS to percentage
           decline_reason: authDecision.reason,
+          response_time_ms: authDecision.responseTimeMs.toString(),
+          cache_hit: authDecision.cacheHit.toString(),
         }
       });
 
-      // Record metrics
-      recordMetrics('stripe.authorization.response_time', Date.now() - startTime);
+      // Record detailed performance metrics
+      const totalLatency = Date.now() - startTime;
+      recordMetrics('stripe.authorization.total_response_time', totalLatency);
+      recordMetrics('stripe.authorization.auth_decision_time', authDecision.responseTimeMs);
       recordMetrics('stripe.authorization.decision', 1, {
         approved: authDecision.approved.toString(),
         reason: authDecision.reason || 'approved',
+        cache_hit: authDecision.cacheHit.toString(),
+      });
+
+      // Performance monitoring alerts
+      if (totalLatency > 400) {
+        logger.warn('Slow total authorization response', { 
+          userId, 
+          authId: authorization.id,
+          totalLatency,
+          authLatency: authDecision.responseTimeMs,
+          cacheHit: authDecision.cacheHit
+        });
+      }
+
+      logger.info('Authorization request completed', {
+        userId,
+        authId: authorization.id,
+        approved: authDecision.approved,
+        amount: validatedData.amount / 100, // Convert to dollars for logging
+        totalLatency,
+        authLatency: authDecision.responseTimeMs,
+        cacheHit: authDecision.cacheHit
       });
 
     } catch (error) {
@@ -320,6 +334,7 @@ export class StripeWebhookHandler {
     reason?: string;
     merchantName?: string;
     latency: number;
+    cacheHit: boolean;
   }): Promise<void> {
     try {
       // Store in database
@@ -359,6 +374,7 @@ export class StripeWebhookHandler {
             health_factor: data.healthFactor,
             latency_ms: data.latency,
             merchant: data.merchantName,
+            cache_hit: data.cacheHit,
           }),
         ]
       );

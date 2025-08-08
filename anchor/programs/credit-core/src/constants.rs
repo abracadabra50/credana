@@ -31,3 +31,5 @@ pub const MIN_REPAY_AMOUNT: u64 = 1_000_000; // 1 USDC minimum repayment
 
 // Supported Collateral (for MVP, only jitoSOL)
 pub const JITO_SOL_MINT: &str = "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn"; 
+// Native SOL wrapped token (constant address)
+pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";

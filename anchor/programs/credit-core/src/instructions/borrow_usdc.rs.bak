@@ -1,0 +1,142 @@
+use anchor_lang::prelude::*;
+use anchor_spl::token::{self, Token, TokenAccount, Transfer};
+use crate::state::{Config, UserPosition};
+use crate::utils::{calculate_borrow_index, calculate_health_factor};
+use crate::constants::*;
+use crate::errors::CreditError;
+
+#[derive(Accounts)]
+pub struct BorrowUsdc<'info> {
+    #[account(
+        mut,
+        seeds = [USER_POSITION_SEED, borrower.key().as_ref()],
+        bump,
+        constraint = user_position.owner == borrower.key() @ CreditError::Unauthorized,
+        constraint = user_position.is_initialized @ CreditError::PositionNotInitialized
+    )]
+    pub user_position: Account<'info, UserPosition>,
+
+    #[account(
+        mut,
+        seeds = [CONFIG_SEED],
+        bump,
+        constraint = !config.paused @ CreditError::ProtocolPaused
+    )]
+    pub config: Account<'info, Config>,
+
+    /// Treasury USDC token account (PDA)
+    #[account(
+        mut,
+        seeds = [b"treasury_usdc"],
+        bump,
+        token::mint = config.usdc_mint,
+        token::authority = treasury_authority
+    )]
+    pub treasury_usdc: Account<'info, TokenAccount>,
+
+    /// Treasury authority PDA
+    /// CHECK: This is the PDA that has authority over treasury
+    #[account(
+        seeds = [b"treasury_authority"],
+        bump
+    )]
+    pub treasury_authority: UncheckedAccount<'info>,
+
+    /// User's USDC token account to receive borrowed funds
+    #[account(
+        mut,
+        constraint = user_usdc_account.owner == borrower.key() @ CreditError::Unauthorized,
+        constraint = user_usdc_account.mint == config.usdc_mint @ CreditError::InvalidMint
+    )]
+    pub user_usdc_account: Account<'info, TokenAccount>,
+
+    #[account(mut)]
+    pub borrower: Signer<'info>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+pub fn handler(ctx: Context<BorrowUsdc>, amount_usdc: u64) -> Result<()> {
+    let config = &mut ctx.accounts.config;
+    let user_position = &mut ctx.accounts.user_position;
+    let clock = Clock::get()?;
+
+    // Update global interest index
+    config.global_borrow_index = calculate_borrow_index(
+        config.last_update_timestamp,
+        config.global_borrow_index,
+        config.interest_rate_bps,
+        clock.unix_timestamp
+    )?;
+    config.last_update_timestamp = clock.unix_timestamp;
+
+    // Update user's existing debt with interest
+    if user_position.debt_usdc > 0 {
+        user_position.debt_usdc = user_position.calculate_debt_with_interest(config.global_borrow_index)?;
+    }
+
+    // Check if user can borrow this amount
+    let new_debt = user_position.debt_usdc
+        .checked_add(amount_usdc)
+        .ok_or(CreditError::MathOverflow)?;
+
+    // Ensure not exceeding credit limit
+    require!(
+        new_debt <= user_position.credit_limit,
+        CreditError::ExceedsCreditLimit
+    );
+
+    // Calculate collateral value (simplified - assumes SOL at mock price)
+    // In production, this would fetch real oracle price
+    let collateral_value_usd = user_position.collateral_amount
+        .checked_mul(100_000_000) // $100 mock price
+        .ok_or(CreditError::MathOverflow)?
+        .checked_div(10u64.pow(SOL_DECIMALS as u32))
+        .ok_or(CreditError::MathOverflow)?;
+
+    // Check health factor after borrowing
+    let health_factor = calculate_health_factor(
+        collateral_value_usd,
+        new_debt,
+        config.liquidation_threshold_bps
+    )?;
+
+    // Require minimum health factor (1.1x = 11000 bps)
+    require!(
+        health_factor >= HEALTH_FACTOR_BUFFER_BPS as u64,
+        CreditError::UnhealthyPosition
+    );
+
+    // Transfer USDC from treasury to user
+    let treasury_authority_bump = ctx.bumps.treasury_authority;
+    let treasury_authority_seeds = &[
+        b"treasury_authority",
+        &[treasury_authority_bump]
+    ];
+    let signer = &[&treasury_authority_seeds[..]];
+
+    let cpi_accounts = Transfer {
+        from: ctx.accounts.treasury_usdc.to_account_info(),
+        to: ctx.accounts.user_usdc_account.to_account_info(),
+        authority: ctx.accounts.treasury_authority.to_account_info(),
+    };
+    let cpi_program = ctx.accounts.token_program.to_account_info();
+    let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
+    
+    token::transfer(cpi_ctx, amount_usdc)?;
+
+    // Update user position
+    user_position.debt_usdc = new_debt;
+    user_position.borrow_index_snapshot = config.global_borrow_index;
+    user_position.last_update_timestamp = clock.unix_timestamp;
+
+    // Update global debt
+    config.total_debt_usdc = config.total_debt_usdc
+        .checked_add(amount_usdc)
+        .ok_or(CreditError::MathOverflow)?;
+
+    msg!("Borrowed {} USDC for user: {}", amount_usdc, ctx.accounts.borrower.key());
+    msg!("New debt: {} USDC, Health factor: {}", new_debt, health_factor);
+
+    Ok(())
+}

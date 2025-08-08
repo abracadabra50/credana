@@ -1,0 +1,23 @@
+--- utils.rs.orig
++++ utils.rs
+@@ -26,7 +26,18 @@
+     clock: &Clock,
+     max_staleness_slots: u64,
+ ) -> Result<u64> {
+-    let price_feed = SolanaPriceAccount::account_info_to_feed(price_account_info)
++    // Convert Anchor AccountInfo to Solana AccountInfo for Pyth SDK
++    let solana_account_info = anchor_lang::solana_program::account_info::AccountInfo {
++        key: price_account_info.key,
++        lamports: price_account_info.lamports.clone(),
++        data: price_account_info.data.clone(),
++        owner: price_account_info.owner,
++        rent_epoch: price_account_info.rent_epoch,
++        is_signer: price_account_info.is_signer,
++        is_writable: price_account_info.is_writable,
++        executable: price_account_info.executable,
++    };
++    
++    let price_feed = SolanaPriceAccount::account_info_to_feed(&solana_account_info)
+         .map_err(|_| CreditError::InvalidOracle)?;
+         
+     let current_price = price_feed
